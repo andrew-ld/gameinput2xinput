@@ -2,15 +2,24 @@
 #include "pch.h"
 #include "gameinput.h"
 #include "aixlog.hpp"
+#include "xinput.h"
 
-#define LOG_FUNCTION_CALL LOG(INFO) << "function invoked" << std::endl;
+#define LOG_FUNCTION_CALL do {									\
+	static bool emitted = false;								\
+	if (!emitted)												\
+	{															\
+		LOG(INFO) << "function invoked" << std::endl;			\
+		emitted = true;											\
+	}															\
+} while (0)
 
 BOOL APIENTRY DllMain(HMODULE hModule,
 	DWORD  ul_reason_for_call,
 	LPVOID lpReserved
 )
 {
-	if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+	if (ul_reason_for_call == DLL_PROCESS_ATTACH)
+	{
 		auto sink_cout = std::make_shared<AixLog::SinkCout>(AixLog::Severity::trace);
 		auto sink_file = std::make_shared<AixLog::SinkFile>(AixLog::Severity::trace, "gameinput.log");
 		AixLog::Log::init({ sink_cout, sink_file });
@@ -18,6 +27,49 @@ BOOL APIENTRY DllMain(HMODULE hModule,
 	}
 
 	return TRUE;
+}
+
+// https://github.com/SpecialKO/SpecialK/blob/245e0c06b4cc2785972a35adbe0b4d1552a83b5b/src/input/game_input.cpp#L1859
+// GNU General Public License 3
+static void ConvertXInputToGameInput(const XINPUT_STATE& xinputState, GameInputGamepadState* state)
+{
+	const XINPUT_GAMEPAD& xgamepad = xinputState.Gamepad;
+
+	state->buttons = GameInputGamepadNone;
+
+	state->leftThumbstickX =
+		static_cast <float> (static_cast <double> (xgamepad.sThumbLX) / 32767.0);
+	state->leftThumbstickY =
+		static_cast <float> (static_cast <double> (xgamepad.sThumbLY) / 32767.0);
+
+	state->rightThumbstickX =
+		static_cast <float> (static_cast <double> (xgamepad.sThumbRX) / 32767.0);
+	state->rightThumbstickY =
+		static_cast <float> (static_cast <double> (xgamepad.sThumbRY) / 32767.0);
+
+	state->leftTrigger =
+		static_cast <float> (static_cast <double> (xgamepad.bLeftTrigger) / 255.0);
+	state->rightTrigger =
+		static_cast <float> (static_cast <double> (xgamepad.bRightTrigger) / 255.0);
+
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_A) != 0 ? GameInputGamepadA : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_B) != 0 ? GameInputGamepadB : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_X) != 0 ? GameInputGamepadX : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_Y) != 0 ? GameInputGamepadY : GameInputGamepadNone;
+
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_START) != 0 ? GameInputGamepadMenu : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_BACK) != 0 ? GameInputGamepadView : GameInputGamepadNone;
+
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 ? GameInputGamepadDPadUp : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 ? GameInputGamepadDPadDown : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0 ? GameInputGamepadDPadLeft : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0 ? GameInputGamepadDPadRight : GameInputGamepadNone;
+
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0 ? GameInputGamepadLeftShoulder : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0 ? GameInputGamepadRightShoulder : GameInputGamepadNone;
+
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0 ? GameInputGamepadLeftThumbstick : GameInputGamepadNone;
+	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0 ? GameInputGamepadRightThumbstick : GameInputGamepadNone;
 }
 
 class GameInputDevice : public IGameInputDevice {
@@ -176,6 +228,10 @@ public:
 };
 
 class GameInputReading : public IGameInputReading {
+private:
+	int _controllerId = -1;
+	LARGE_INTEGER _timestamp = {};
+
 public:
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
 	{
@@ -209,7 +265,7 @@ public:
 	uint64_t GetTimestamp() noexcept override
 	{
 		LOG_FUNCTION_CALL;
-		return 0;
+		return _timestamp.QuadPart;
 	}
 
 	void GetDevice(IGameInputDevice** device) noexcept override
@@ -311,9 +367,45 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		
+		XINPUT_STATE xinputState;
+		bool xinputSuccess = false;
 
-		return false;
+		ZeroMemory(&xinputState, sizeof(XINPUT_STATE));
+		ZeroMemory(state, sizeof(GameInputGamepadState));
+
+		if (_controllerId == -1) {
+			for (DWORD i = 0; i < XUSER_MAX_COUNT; i++)
+			{
+				if (XInputGetState(i, &xinputState) == ERROR_SUCCESS)
+				{
+					xinputSuccess = true;
+					_controllerId = i;
+					break;
+				}
+			}
+		}
+		else
+		{
+			if (XInputGetState(_controllerId, &xinputState) == ERROR_SUCCESS)
+			{
+				xinputSuccess = true;
+			}
+			else
+			{
+				_controllerId = -1;
+			}
+		}
+
+		if (xinputSuccess) {
+			ConvertXInputToGameInput(xinputState, state);
+			QueryPerformanceCounter(&_timestamp);
+		}
+		else
+		{
+			_timestamp = {};
+		}
+
+		return xinputSuccess;
 	}
 
 	bool GetRacingWheelState(GameInputRacingWheelState* state) noexcept override
@@ -363,7 +455,8 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		if (device == &_device) {
+		if (device == &_device)
+		{
 			*reading = &_reading;
 			return S_OK;
 		}
@@ -375,7 +468,8 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		if (device == &_device) {
+		if (device == &_device)
+		{
 			return GAMEINPUT_E_READING_NOT_FOUND;
 		}
 
@@ -404,7 +498,8 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		if (inputKind == GameInputKindGamepad && (statusFilter & GameInputDeviceConnected) != 0) {
+		if (inputKind == GameInputKindGamepad && (statusFilter & GameInputDeviceConnected) != 0)
+		{
 			LARGE_INTEGER timestamp;
 			QueryPerformanceCounter(&timestamp);
 			callbackFunc(callbackToken != nullptr ? *callbackToken : 0, context, &_device, timestamp.QuadPart, GameInputDeviceConnected, GameInputDeviceConnected);
@@ -485,8 +580,8 @@ public:
 	}
 };
 
-extern "C" __declspec(dllexport) HRESULT __stdcall GameInputCreate(
-	_COM_Outptr_ IGameInput** gameInput) {
+extern "C" __declspec(dllexport) HRESULT __stdcall GameInputCreate(_COM_Outptr_ IGameInput** gameInput)
+{
 	LOG_FUNCTION_CALL;
 
 	static GameInput gameInputSingleton{};

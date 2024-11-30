@@ -7,4 +7,8 @@
 #ifndef PCH_H
 #define PCH_H
 
+#ifdef _MSC_VER
+#pragma comment(lib, "xinput")
+#endif
+
 #endif //PCH_H
