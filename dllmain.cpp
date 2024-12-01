@@ -5,16 +5,14 @@
 #include "xinput.h"
 #include <algorithm>
 
-#define LOG_FUNCTION_CALL do {									\
-	static bool emitted = false;								\
-	if (!emitted)												\
-	{															\
-		LOG(INFO) << "function invoked" << std::endl;			\
-		emitted = true;											\
-	}															\
+#define LOG_FUNCTION_CALL do {															\
+	static bool emitted = false;														\
+	if (!emitted)																		\
+	{																					\
+		LOG(AixLog::Severity::info) << "function invoked" << std::endl;					\
+		emitted = true;																	\
+	}																					\
 } while (0)
-
-static DWORD g_last_used_xinput_slot = XUSER_INDEX_ANY;
 
 BOOL APIENTRY DllMain(HMODULE hModule,
 	DWORD  ul_reason_for_call,
@@ -75,8 +73,20 @@ static void ConvertXInputToGameInput(const XINPUT_STATE& xinputState, GameInputG
 	state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0 ? GameInputGamepadRightThumbstick : GameInputGamepadNone;
 }
 
-class GameInputDevice : public IGameInputDevice {
+class GameInputDeviceState {
 public:
+	int xinputSlot = -1;
+};
+
+class GameInputDevice : public IGameInputDevice {
+private:
+	GameInputDeviceState *_deviceState;
+
+public:
+	explicit GameInputDevice(GameInputDeviceState *deviceState) : _deviceState(deviceState) {
+		LOG_FUNCTION_CALL;
+	}
+
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
 	{
 		LOG_FUNCTION_CALL;
@@ -167,12 +177,20 @@ public:
 		LOG_FUNCTION_CALL;
 
 		XINPUT_VIBRATION vibration = {
-			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->leftTrigger  + params->lowFrequency,  0.0f), 1.0f) * 65536.0f))) : 0ui16,
+			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->leftTrigger + params->lowFrequency,  0.0f), 1.0f) * 65536.0f))) : 0ui16,
 			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->rightTrigger + params->highFrequency, 0.0f), 1.0f) * 65536.0f))) : 0ui16
 		};
 
-		if (g_last_used_xinput_slot < XUSER_MAX_COUNT)
-			XInputSetState(g_last_used_xinput_slot, &vibration);
+		auto xinputSlot = _deviceState->xinputSlot;
+
+		if (xinputSlot != -1)
+		{
+			auto result = XInputSetState(xinputSlot, &vibration);
+
+			if (result != ERROR_SUCCESS) {
+				LOG(AixLog::Severity::error) << "xinput set state error: " << result << std::endl;
+			}
+		}
 	}
 
 	void SetInputSynchronizationState(bool enabled) noexcept override
@@ -240,11 +258,15 @@ public:
 
 class GameInputReading : public IGameInputReading {
 private:
-	int _controllerId = -1;
 	LARGE_INTEGER _timestamp = {};
 	XINPUT_STATE _last_state = {};
+	GameInputDeviceState *_deviceState;
 
 public:
+	explicit GameInputReading(GameInputDeviceState *deviceState) : _deviceState(deviceState) {
+		LOG_FUNCTION_CALL;
+	}
+
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
 	{
 		LOG_FUNCTION_CALL;
@@ -385,21 +407,22 @@ public:
 		ZeroMemory(&xinputState, sizeof(XINPUT_STATE));
 		ZeroMemory(state, sizeof(GameInputGamepadState));
 
-		if (_controllerId == -1) {
+		auto xinputSlot = _deviceState->xinputSlot;
+
+		if (xinputSlot == -1) {
 			for (DWORD i = 0; i < XUSER_MAX_COUNT; i++)
 			{
 				if (XInputGetState(i, &xinputState) == ERROR_SUCCESS)
 				{
 					xinputSuccess = true;
-					_controllerId = i;
-					g_last_used_xinput_slot = i;
+					_deviceState->xinputSlot = i;
 					break;
 				}
 			}
 		}
 		else
 		{
-			int result = XInputGetState(_controllerId, &xinputState);
+			int result = XInputGetState(xinputSlot, &xinputState);
 
 			if (result == ERROR_SUCCESS)
 			{
@@ -407,10 +430,7 @@ public:
 			}
 			else
 			{
-				LOG(ERROR) << "xinput error: " << result << std::endl;
-				_controllerId = -1;
-				_last_state.dwPacketNumber = 0;
-				g_last_used_xinput_slot = XUSER_INDEX_ANY;
+				LOG(AixLog::Severity::info) << "xinput error: " << result << std::endl;
 			}
 		}
 
@@ -426,6 +446,7 @@ public:
 		else
 		{
 			_timestamp = {};
+			_deviceState->xinputSlot = -1;
 			_last_state.dwPacketNumber = 0;
 		}
 
@@ -447,8 +468,9 @@ public:
 
 class GameInput : public IGameInput {
 private:
-	GameInputDevice _device{};
-	GameInputReading _reading{};
+	GameInputDeviceState _device_state{};
+	GameInputDevice _device{ &_device_state };
+	GameInputReading _reading{ &_device_state };
 	UINT64 _last_gampad_reading = 0;
 
 public:
