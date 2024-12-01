@@ -3,6 +3,7 @@
 #include "gameinput.h"
 #include "aixlog.hpp"
 #include "xinput.h"
+#include <algorithm>
 
 #define LOG_FUNCTION_CALL do {									\
 	static bool emitted = false;								\
@@ -12,6 +13,8 @@
 		emitted = true;											\
 	}															\
 } while (0)
+
+static DWORD g_last_used_xinput_slot = XUSER_INDEX_ANY;
 
 BOOL APIENTRY DllMain(HMODULE hModule,
 	DWORD  ul_reason_for_call,
@@ -162,6 +165,14 @@ public:
 	void SetRumbleState(const GameInputRumbleParams* params) noexcept override
 	{
 		LOG_FUNCTION_CALL;
+
+		XINPUT_VIBRATION vibration = {
+			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->leftTrigger  + params->lowFrequency,  0.0f), 1.0f) * 65536.0f))) : 0ui16,
+			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->rightTrigger + params->highFrequency, 0.0f), 1.0f) * 65536.0f))) : 0ui16
+		};
+
+		if (g_last_used_xinput_slot < XUSER_MAX_COUNT)
+			XInputSetState(g_last_used_xinput_slot, &vibration);
 	}
 
 	void SetInputSynchronizationState(bool enabled) noexcept override
@@ -231,6 +242,7 @@ class GameInputReading : public IGameInputReading {
 private:
 	int _controllerId = -1;
 	LARGE_INTEGER _timestamp = {};
+	XINPUT_STATE _last_state = {};
 
 public:
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
@@ -380,6 +392,7 @@ public:
 				{
 					xinputSuccess = true;
 					_controllerId = i;
+					g_last_used_xinput_slot = i;
 					break;
 				}
 			}
@@ -396,16 +409,24 @@ public:
 			{
 				LOG(ERROR) << "xinput error: " << result << std::endl;
 				_controllerId = -1;
+				_last_state.dwPacketNumber = 0;
+				g_last_used_xinput_slot = XUSER_INDEX_ANY;
 			}
 		}
 
-		if (xinputSuccess) {
-			QueryPerformanceCounter(&_timestamp);
+		if (xinputSuccess)
+		{
+			if (std::exchange(_last_state.dwPacketNumber, xinputState.dwPacketNumber) < xinputState.dwPacketNumber)
+			{
+				QueryPerformanceCounter(&_timestamp);
+			}
+
 			ConvertXInputToGameInput(xinputState, state);
 		}
 		else
 		{
 			_timestamp = {};
+			_last_state.dwPacketNumber = 0;
 		}
 
 		return xinputSuccess;
@@ -428,6 +449,7 @@ class GameInput : public IGameInput {
 private:
 	GameInputDevice _device{};
 	GameInputReading _reading{};
+	UINT64 _last_gampad_reading = 0;
 
 public:
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
@@ -473,6 +495,16 @@ public:
 
 		if (device == &_device)
 		{
+			GameInputGamepadState gamepad_state = {};
+			if (_reading.GetGamepadState(&gamepad_state))
+			{
+				if (std::exchange(_last_gampad_reading, _reading.GetTimestamp()) < _reading.GetTimestamp())
+				{
+					*reading = &_reading;
+					return S_OK;
+				}
+			}
+
 			return GAMEINPUT_E_READING_NOT_FOUND;
 		}
 
