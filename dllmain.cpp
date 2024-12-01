@@ -386,19 +386,22 @@ public:
 		}
 		else
 		{
-			if (XInputGetState(_controllerId, &xinputState) == ERROR_SUCCESS)
+			int result = XInputGetState(_controllerId, &xinputState);
+
+			if (result == ERROR_SUCCESS)
 			{
 				xinputSuccess = true;
 			}
 			else
 			{
+				LOG(ERROR) << "xinput error: " << result << std::endl;
 				_controllerId = -1;
 			}
 		}
 
 		if (xinputSuccess) {
-			ConvertXInputToGameInput(xinputState, state);
 			QueryPerformanceCounter(&_timestamp);
+			ConvertXInputToGameInput(xinputState, state);
 		}
 		else
 		{
