@@ -468,9 +468,9 @@ public:
 
 class GameInput : public IGameInput {
 private:
-	GameInputDeviceState _device_state{};
-	GameInputDevice _device{ &_device_state };
-	GameInputReading _reading{ &_device_state };
+	GameInputDeviceState _deviceState{};
+	GameInputDevice _device{ &_deviceState };
+	GameInputReading _reading{ &_deviceState };
 	UINT64 _last_gampad_reading = 0;
 
 public:
