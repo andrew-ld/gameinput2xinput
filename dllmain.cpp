@@ -429,9 +429,9 @@ public:
 						LOG(AixLog::Severity::error) << "xinput error: " << result << " slot: " << i << std::endl;
 					}
 				}
-
-				_logAllXinputErrorsOnce = false;
 			}
+
+			_logAllXinputErrorsOnce = false;
 		}
 		else
 		{
