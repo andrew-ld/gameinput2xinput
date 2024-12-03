@@ -444,6 +444,7 @@ public:
 			else
 			{
 				LOG(AixLog::Severity::error) << "xinput error: " << result << " slot: " << xinputSlot << std::endl;
+				_logAllXinputErrorsOnce = true;
 			}
 		}
 
