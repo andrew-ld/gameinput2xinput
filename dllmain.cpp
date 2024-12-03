@@ -83,7 +83,8 @@ private:
 	GameInputDeviceState* _deviceState;
 
 public:
-	explicit GameInputDevice(GameInputDeviceState* deviceState) : _deviceState(deviceState) {
+	explicit GameInputDevice(GameInputDeviceState* deviceState) : _deviceState(deviceState)
+	{
 		LOG_FUNCTION_CALL;
 	}
 
@@ -265,7 +266,8 @@ private:
 	bool _logAllXinputErrorsOnce = true;
 
 public:
-	explicit GameInputReading(GameInputDeviceState* deviceState) : _deviceState(deviceState) {
+	explicit GameInputReading(GameInputDeviceState* deviceState) : _deviceState(deviceState)
+	{
 		LOG_FUNCTION_CALL;
 	}
 
@@ -411,13 +413,15 @@ public:
 
 		auto xinputSlot = _deviceState->xinputSlot;
 
-		if (xinputSlot == -1) {
+		if (xinputSlot == -1)
+		{
 			for (DWORD i = 0; i < XUSER_MAX_COUNT; i++)
 			{
 				int result = XInputGetState(i, &xinputState);
 
 				if (result == ERROR_SUCCESS)
 				{
+					LOG(AixLog::Severity::info) << "using xinput slot: " << i << std::endl;
 					xinputSuccess = true;
 					_deviceState->xinputSlot = i;
 					break;
