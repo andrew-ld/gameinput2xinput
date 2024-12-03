@@ -80,10 +80,10 @@ public:
 
 class GameInputDevice : public IGameInputDevice {
 private:
-	GameInputDeviceState *_deviceState;
+	GameInputDeviceState* _deviceState;
 
 public:
-	explicit GameInputDevice(GameInputDeviceState *deviceState) : _deviceState(deviceState) {
+	explicit GameInputDevice(GameInputDeviceState* deviceState) : _deviceState(deviceState) {
 		LOG_FUNCTION_CALL;
 	}
 
@@ -187,8 +187,9 @@ public:
 		{
 			auto result = XInputSetState(xinputSlot, &vibration);
 
-			if (result != ERROR_SUCCESS) {
-				LOG(AixLog::Severity::error) << "xinput set state error: " << result << std::endl;
+			if (result != ERROR_SUCCESS)
+			{
+				LOG(AixLog::Severity::error) << "xinput set state error: " << result << " slot: " << xinputSlot << std::endl;
 			}
 		}
 	}
@@ -259,11 +260,12 @@ public:
 class GameInputReading : public IGameInputReading {
 private:
 	LARGE_INTEGER _timestamp = {};
-	XINPUT_STATE _last_state = {};
-	GameInputDeviceState *_deviceState;
+	XINPUT_STATE _lastXinputState = {};
+	GameInputDeviceState* _deviceState;
+	bool _logAllXinputErrorsOnce = true;
 
 public:
-	explicit GameInputReading(GameInputDeviceState *deviceState) : _deviceState(deviceState) {
+	explicit GameInputReading(GameInputDeviceState* deviceState) : _deviceState(deviceState) {
 		LOG_FUNCTION_CALL;
 	}
 
@@ -412,12 +414,23 @@ public:
 		if (xinputSlot == -1) {
 			for (DWORD i = 0; i < XUSER_MAX_COUNT; i++)
 			{
-				if (XInputGetState(i, &xinputState) == ERROR_SUCCESS)
+				int result = XInputGetState(i, &xinputState);
+
+				if (result == ERROR_SUCCESS)
 				{
 					xinputSuccess = true;
 					_deviceState->xinputSlot = i;
 					break;
 				}
+				else
+				{
+					if (_logAllXinputErrorsOnce)
+					{
+						LOG(AixLog::Severity::error) << "xinput error: " << result << " slot: " << i << std::endl;
+					}
+				}
+
+				_logAllXinputErrorsOnce = false;
 			}
 		}
 		else
@@ -430,13 +443,13 @@ public:
 			}
 			else
 			{
-				LOG(AixLog::Severity::info) << "xinput error: " << result << std::endl;
+				LOG(AixLog::Severity::error) << "xinput error: " << result << " slot: " << xinputSlot << std::endl;
 			}
 		}
 
 		if (xinputSuccess)
 		{
-			if (std::exchange(_last_state.dwPacketNumber, xinputState.dwPacketNumber) < xinputState.dwPacketNumber)
+			if (std::exchange(_lastXinputState.dwPacketNumber, xinputState.dwPacketNumber) < xinputState.dwPacketNumber)
 			{
 				QueryPerformanceCounter(&_timestamp);
 			}
@@ -447,7 +460,7 @@ public:
 		{
 			_timestamp = {};
 			_deviceState->xinputSlot = -1;
-			_last_state.dwPacketNumber = 0;
+			_lastXinputState.dwPacketNumber = 0;
 		}
 
 		return xinputSuccess;
@@ -471,7 +484,7 @@ private:
 	GameInputDeviceState _deviceState{};
 	GameInputDevice _device{ &_deviceState };
 	GameInputReading _reading{ &_deviceState };
-	UINT64 _last_gampad_reading = 0;
+	UINT64 _lastGamepadReading = 0;
 
 public:
 	HRESULT QueryInterface(const IID& riid, void** ppvObj) noexcept override
@@ -520,7 +533,7 @@ public:
 			GameInputGamepadState gamepad_state = {};
 			if (_reading.GetGamepadState(&gamepad_state))
 			{
-				if (std::exchange(_last_gampad_reading, _reading.GetTimestamp()) < _reading.GetTimestamp())
+				if (std::exchange(_lastGamepadReading, _reading.GetTimestamp()) < _reading.GetTimestamp())
 				{
 					*reading = &_reading;
 					return S_OK;
@@ -557,6 +570,7 @@ public:
 
 		if (inputKind == GameInputKindGamepad && (statusFilter & GameInputDeviceConnected) != 0)
 		{
+			LOG(AixLog::Severity::info) << "calling device callback with our fake device" << std::endl;
 			LARGE_INTEGER timestamp;
 			QueryPerformanceCounter(&timestamp);
 			callbackFunc(callbackToken != nullptr ? *callbackToken : 0, context, &_device, timestamp.QuadPart, GameInputDeviceConnected, GameInputDeviceConnected);
