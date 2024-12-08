@@ -3,7 +3,7 @@
 #include "gameinput.h"
 #include "aixlog.hpp"
 #include "xinput.h"
-#include <algorithm>
+#include "steam/isteaminput.h"
 
 #define LOG_FUNCTION_CALL do {															\
 	static bool emitted = false;														\
@@ -15,7 +15,7 @@
 } while (0)
 
 BOOL APIENTRY DllMain(HMODULE hModule,
-	DWORD  ul_reason_for_call,
+	DWORD ul_reason_for_call,
 	LPVOID lpReserved
 )
 {
@@ -78,6 +78,108 @@ public:
 	int xinputSlot = -1;
 };
 
+// internals from steam that we need to make our pSteamInput() accessor work
+typedef HSteamUser (*SteamAPI_GetHSteamUserFn)();
+typedef void* (*SteamInternal_FindOrCreateUserInterfaceFn)(HSteamUser, const char *);
+typedef void* (*SteamInternal_ContextInitFn)(void **);
+typedef void (*SteamInternal_Init_SteamInputFn)(ISteamInput **);
+static SteamAPI_GetHSteamUserFn pSteamAPI_GetHSteamUser = nullptr;
+static SteamInternal_FindOrCreateUserInterfaceFn pSteamInternal_FindOrCreateUserInterface = nullptr;
+static SteamInternal_ContextInitFn pSteamInternal_ContextInit = nullptr;
+
+// expanded macro from isteaminput.h
+// because we're doing this at runtime, we have to use pSteamInput()
+// instead of SteamInput(), or else we'll get a linker error
+inline void __cdecl pSteamInternal_Init_SteamInput(ISteamInput **p)
+{
+	*p = (ISteamInput *)(pSteamInternal_FindOrCreateUserInterface(
+		pSteamAPI_GetHSteamUser(),
+		STEAMINPUT_INTERFACE_VERSION
+	));
+}
+inline ISteamInput *pSteamInput()
+{
+	static void *s_CallbackCounterAndContext[3] = { (void *)&pSteamInternal_Init_SteamInput, 0, 0 };
+	return *(ISteamInput **)pSteamInternal_ContextInit(s_CallbackCounterAndContext);
+}
+
+static bool hasSteamInput(bool tryLoad = true)
+{
+	// we will try to get the steam_api64.dll module for 2.5 minutes after the game
+	// has launched, after that we will give up
+	static const int FIND_STEAM_INPUT_TIMEOUT_MS = 60 * 1000 * 2.5;
+	static int findSteamInputDeadline = -1;
+	static bool findSteamInputFailed = false;
+
+	// we have the internals, so you can access SteamInput
+	if (pSteamAPI_GetHSteamUser && pSteamInternal_FindOrCreateUserInterface && pSteamInternal_ContextInit)
+		return true;
+
+	// either we're not going to try to load it, or we already failed to find it
+	if (!tryLoad || findSteamInputFailed)
+		return false;
+
+	// setup deadline, or if we're past it, log and return false
+	if (findSteamInputDeadline == -1)
+	{
+		LOG(AixLog::Severity::info) << "Started searching for SteamInput" << std::endl;
+		findSteamInputDeadline = GetTickCount() + FIND_STEAM_INPUT_TIMEOUT_MS;
+	}
+	else if (GetTickCount() > findSteamInputDeadline)
+	{
+		LOG(AixLog::Severity::error) << "SteamInput not found after timeout" << std::endl;
+		findSteamInputFailed = true;
+		return false;
+	}
+
+	// try to get the steam_api64.dll module
+	HMODULE hSteamAPI = GetModuleHandleW(L"steam_api64.dll");
+
+	// if we can't get the module, we'll try again later
+	if (!hSteamAPI) return false;
+
+	// get addresses of the internal functions
+
+	pSteamAPI_GetHSteamUser =
+		(SteamAPI_GetHSteamUserFn)GetProcAddress(hSteamAPI, "SteamAPI_GetHSteamUser");
+
+	pSteamInternal_FindOrCreateUserInterface =
+		(SteamInternal_FindOrCreateUserInterfaceFn)GetProcAddress(hSteamAPI, "SteamInternal_FindOrCreateUserInterface");
+
+	pSteamInternal_ContextInit =
+		(SteamInternal_ContextInitFn)GetProcAddress(hSteamAPI, "SteamInternal_ContextInit");
+
+	if (!pSteamAPI_GetHSteamUser || !pSteamInternal_FindOrCreateUserInterface || !pSteamInternal_ContextInit)
+	{
+		LOG(AixLog::Severity::error) << "SteamAPI internal functions not found" << std::endl;
+		findSteamInputFailed = true;
+		pSteamAPI_GetHSteamUser = nullptr;
+		pSteamInternal_FindOrCreateUserInterface = nullptr;
+		pSteamInternal_ContextInit = nullptr;
+		return false;
+	}
+
+	LOG(AixLog::Severity::info) << "SteamAPI internal functions found" << std::endl;
+
+	// TODO: unsure of steam input initialization behavior if something else already initialized it,
+	// so out of safety we'll try doing a test call to see if it's usable
+	try {
+		if (pSteamInput()->Init(false))
+			LOG(AixLog::Severity::info) << "SteamInput initialized by gameinput2xinput" << std::endl;
+		else
+			pSteamInput()->GetSessionInputConfigurationSettings();
+	} catch (...) {
+		LOG(AixLog::Severity::error) << "SteamInput initialization failed" << std::endl;
+		findSteamInputFailed = true;
+		return false;
+	}
+
+	// we did it!
+	LOG(AixLog::Severity::info) << "SteamInput ready" << std::endl;
+
+	return true;
+}
+
 class GameInputDevice : public IGameInputDevice {
 private:
 	GameInputDeviceState* _deviceState;
@@ -124,6 +226,11 @@ public:
 
 		dev_info.capabilities = GameInputDeviceCapabilityPowerOff | GameInputDeviceCapabilityWireless;
 
+		// TODO: it may or may not matter, but we may want to change the controller vid/pid
+		// to match an xbox one controller in case games don't send impulse triggers due to
+		// the device family being 360
+		// for stalker 2, it does not matter
+
 		dev_info.vendorId = 0x45e;
 		dev_info.productId = 0x28e;
 
@@ -134,7 +241,7 @@ public:
 		dev_info.interfaceNumber = 0;
 
 		dev_info.supportedInput = GameInputKindControllerAxis | GameInputKindControllerButton | GameInputKindGamepad | GameInputKindUiNavigation;
-		dev_info.supportedRumbleMotors = GameInputRumbleLowFrequency | GameInputRumbleHighFrequency;
+		dev_info.supportedRumbleMotors = GameInputRumbleLowFrequency | GameInputRumbleHighFrequency| GameInputRumbleLeftTrigger | GameInputRumbleRightTrigger;
 
 		return &dev_info;
 	}
@@ -177,15 +284,47 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		XINPUT_VIBRATION vibration = {
-			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->leftTrigger + params->lowFrequency,  0.0f), 1.0f) * 65536.0f))) : 0ui16,
-			params != nullptr ? static_cast<WORD>(min(65535U, static_cast<UINT>(min(max(params->rightTrigger + params->highFrequency, 0.0f), 1.0f) * 65536.0f))) : 0ui16
-		};
-
 		auto xinputSlot = _deviceState->xinputSlot;
 
 		if (xinputSlot != -1)
 		{
+			UINT16 low = params != nullptr ? static_cast <UINT16> (params->lowFrequency * 65536.0f) : 0ui16;
+			UINT16 high = params != nullptr ? static_cast <UINT16> (params->highFrequency * 65536.0f) : 0ui16;
+			UINT16 left = params != nullptr ? static_cast <UINT16> (params->leftTrigger * 65536.0f) : 0ui16;
+			UINT16 right = params != nullptr ? static_cast <UINT16> (params->rightTrigger * 65536.0f): 0ui16;
+
+			// take the max of high, left, right, since this may be a controller that does not
+			// have trigger vibration and there is no guarantee that the low and high frequency
+			// motors are on the left and right side respectively, for e.g. the Dualsense which
+			// just has two identical motors on each side and uses a rumble emulation that fires
+			// both motors at the same time
+			UINT16 highMixed = max(max(left, right), high);
+
+			if (hasSteamInput())
+			{
+				InputHandle_t handle = pSteamInput()->GetControllerForGamepadIndex(_deviceState->xinputSlot);
+
+				// this controller may not be associated with steam input
+				if (handle)
+				{
+					// send left and right trigger only if it's an impulse trigger controller
+					if (pSteamInput()->GetInputTypeForHandle(handle) == k_ESteamInputType_XBoxOneController)
+						pSteamInput()->TriggerVibrationExtended(handle, low, high, left, right);
+					else
+						pSteamInput()->TriggerVibrationExtended(handle, low, highMixed, 0, 0);
+
+					// return now so we don't fall back to xinput
+					return;
+				}
+			}
+
+			// fall back to xinput
+
+			XINPUT_VIBRATION vibration = {
+				static_cast<WORD>(min(65535U, low)),
+				static_cast<WORD>(min(65535U, highMixed))
+			};
+
 			auto result = XInputSetState(xinputSlot, &vibration);
 
 			if (result != ERROR_SUCCESS)
@@ -507,6 +646,14 @@ public:
 	ULONG Release() noexcept override
 	{
 		LOG_FUNCTION_CALL;
+
+		// if we have steam input, we should shut it down
+		if (hasSteamInput(false))
+		{
+			LOG(AixLog::Severity::info) << "shutting down steam input" << std::endl;
+			pSteamInput()->Shutdown();
+		}
+
 		return 0;
 	}
 
