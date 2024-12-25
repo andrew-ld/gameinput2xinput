@@ -582,7 +582,7 @@ public:
 			return S_OK;
 		}
 
-		LOG(AixLog::Severity::info) << "not returning fake device, inputKind: " << inputKind << " statusFilter: " << statusFilter;
+		LOG(AixLog::Severity::info) << "not returning fake device, inputKind: " << inputKind << " statusFilter: " << statusFilter << std::endl;
 
 		return E_NOTIMPL;
 	}
