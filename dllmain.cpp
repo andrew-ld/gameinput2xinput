@@ -573,7 +573,7 @@ public:
 	{
 		LOG_FUNCTION_CALL;
 
-		if (inputKind == GameInputKindGamepad && (statusFilter & GameInputDeviceConnected) != 0)
+		if ((inputKind & GameInputKindGamepad) != 0 && (statusFilter & GameInputDeviceConnected) != 0)
 		{
 			LOG(AixLog::Severity::info) << "calling device callback with our fake device" << std::endl;
 			LARGE_INTEGER timestamp;
