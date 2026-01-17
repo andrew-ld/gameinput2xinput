@@ -7,3 +7,4 @@ This library partially reimplements gameinput using xinput.
 
 # Tested games
 - Stalker 2 version 1.0.1: working
+- Kingdom Come: Deliverance II
