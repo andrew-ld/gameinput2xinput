@@ -6,5 +6,5 @@ This library partially reimplements gameinput using xinput.
 - add the following launch option to the game's properties: `WINEDLLOVERRIDES="gameinput=n,b" %command%`
 
 # Tested games
-- Stalker 2 version 1.0.1: working
+- Stalker 2
 - Kingdom Come: Deliverance II
